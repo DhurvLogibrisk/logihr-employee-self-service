@@ -30,29 +30,29 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 const STORAGE_KEY = 'LOGIHR_DATA_STORE_V3';
 
-// Initial Seed Profile
+// Initial Clean Profile Structure
 const DEFAULT_PROFILE: EmployeeProfile = {
-  id: 'emp-00125',
-  empCode: 'EMP-00125',
-  name: 'Parth Bhutka',
-  designation: 'Lead Project Manager',
-  department: 'Product & Engineering',
-  reportingManager: 'Vikram Shah (Director)',
-  reportingManagerId: 'emp-00010',
+  id: '',
+  empCode: '',
+  name: 'Corporate Employee',
+  designation: 'Staff',
+  department: 'General',
+  reportingManager: 'Reporting Manager',
+  reportingManagerId: '',
   workLocation: 'Surat HQ',
-  email: 'parth.b@logibrisk.com',
-  phone: '+91 98795 43210',
-  joiningDate: '01 Apr 2025',
+  email: '',
+  phone: '',
+  joiningDate: '01 Apr 2026',
   shiftName: 'General Day Shift (IST)',
   shiftHours: '09:30 AM - 06:30 PM (9h)',
   shiftStart: '09:30:00',
-  assignedSites: ['site-surat-hq', 'site-ahmedabad-hub'],
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  role: 'MANAGER',
-  isDeviceRegistered: true,
-  registeredDeviceId: 'DEV-PX8-9941',
-  registeredDeviceModel: 'Google Pixel 8 Pro (Android 14)',
-  consentGivenAt: undefined, // First login requires privacy consent
+  assignedSites: ['site-surat-hq'],
+  avatarUrl: '',
+  role: 'EMPLOYEE',
+  isDeviceRegistered: false,
+  registeredDeviceId: '',
+  registeredDeviceModel: '',
+  consentGivenAt: undefined,
 };
 
 const DEFAULT_LEAVE_BALANCES: LeaveBalance[] = [
@@ -93,7 +93,6 @@ class ApiService {
   private kudosList: KudosItem[];
   private goals: GoalItem[];
   private activePoll: PollItem;
-  private kioskAdminPin = '9941';
 
   constructor() {
     const saved = this.loadFromStorage();
@@ -124,7 +123,6 @@ class ApiService {
         totalVotes: 82,
         expiresAt: '15 Oct 2026',
       };
-      this.kioskAdminPin = saved.kioskAdminPin || '9941';
     } else {
       // Default Seed State
       this.profile = { ...DEFAULT_PROFILE };
@@ -338,7 +336,6 @@ class ApiService {
         kudosList: this.kudosList,
         goals: this.goals,
         activePoll: this.activePoll,
-        kioskAdminPin: this.kioskAdminPin,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
@@ -1082,93 +1079,104 @@ class ApiService {
   }): Promise<{ punch: AttendancePunch; message: string }> {
     let punch: AttendancePunch;
 
-    try {
-      const res = await fetch('/api/attendance/punch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: params.type,
-          workMode: params.workMode,
-          latitude: params.latitude,
-          longitude: params.longitude,
-          accuracy: params.accuracy || 10,
-          deviceId: this.profile.registeredDeviceId,
-          selfieUrl: params.selfieUrl,
-          offlineQueued: params.offlineQueued,
-        }),
-      });
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase.functions.invoke('punch', {
+          body: {
+            type: params.type,
+            workMode: params.workMode,
+            latitude: params.latitude,
+            longitude: params.longitude,
+            accuracy: params.accuracy || 10,
+            deviceId: this.profile.registeredDeviceId,
+            selfieUrl: params.selfieUrl,
+          },
+        });
 
-      if (res.ok) {
-        const data = await res.json();
-        punch = data.punch;
-      } else {
-        throw new Error('Server punch endpoint error');
+        if (error || !data?.success) {
+          throw new Error(data?.error || error?.message || 'Unable to securely record attendance.');
+        }
+
+        const raw = data.punch;
+        punch = {
+          id: raw.id || `punch-${Date.now()}`,
+          employeeId: raw.employee_id || this.profile.id,
+          type: raw.type,
+          workMode: raw.work_mode,
+          serverTimestampUtc: raw.server_timestamp,
+          serverTimeFormattedIST: raw.serverTimeFormattedIST || serverTimeService.getCurrentServerTimeFormattedIST(),
+          epochMs: raw.epochMs || Date.now(),
+          siteId: raw.site_id,
+          siteName: raw.site_name,
+          latitude: raw.latitude,
+          longitude: raw.longitude,
+          accuracy: raw.accuracy,
+          distanceMeters: raw.distance_meters,
+          isWithinGeofence: raw.is_within_geofence,
+          deviceId: raw.device_id,
+          deviceModel: this.profile.registeredDeviceModel,
+          networkType: 'WiFi',
+          selfieUrl: raw.selfie_url,
+          offlineQueued: false,
+          receivedLate: false,
+          flags: {
+            mockLocationDetected: false,
+            clockDriftDetected: false,
+            lateMark: false,
+            earlyOut: false,
+          },
+        };
+
+        this.punchesList.push(punch);
+        this.saveToStorage();
+        return {
+          punch,
+          message: data.message || `Punch recorded at ${punch.serverTimeFormattedIST} IST.`,
+        };
+      } catch (err: any) {
+        if (params.offlineQueued) {
+          const geoEval = evaluateGeofence(params.latitude, params.longitude, params.accuracy || 10);
+          const serverEpoch = serverTimeService.getCurrentServerEpochMs();
+          punch = {
+            id: `punch-queued-${Date.now()}`,
+            employeeId: this.profile.id,
+            type: params.type,
+            workMode: params.workMode,
+            serverTimestampUtc: new Date(serverEpoch).toISOString(),
+            serverTimeFormattedIST: 'PENDING — NOT RECORDED',
+            epochMs: serverEpoch,
+            siteId: geoEval.nearestSite.id,
+            siteName: geoEval.nearestSite.name,
+            latitude: params.latitude,
+            longitude: params.longitude,
+            accuracy: params.accuracy || 10,
+            distanceMeters: geoEval.distanceMeters,
+            isWithinGeofence: geoEval.isWithinGeofence,
+            deviceId: this.profile.registeredDeviceId,
+            deviceModel: this.profile.registeredDeviceModel,
+            networkType: 'Offline',
+            selfieUrl: params.selfieUrl,
+            offlineQueued: true,
+            receivedLate: true,
+            flags: {
+              mockLocationDetected: false,
+              clockDriftDetected: false,
+              lateMark: false,
+              earlyOut: false,
+            },
+          };
+          this.punchesList.push(punch);
+          this.saveToStorage();
+          return {
+            punch,
+            message: 'Network offline: Punch queued locally as PENDING — NOT RECORDED.',
+          };
+        }
+        throw new Error(err.message || 'Unable to securely record attendance. Please try again.');
       }
-    } catch {
-      // Local server-synchronized monotonic fallback
-      const geoEval = evaluateGeofence(params.latitude, params.longitude, params.accuracy || 10);
-      const serverEpoch = serverTimeService.getCurrentServerEpochMs();
-      const serverDate = new Date(serverEpoch);
-      const formattedIST = new Intl.DateTimeFormat('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: true,
-      }).format(serverDate);
-
-      punch = {
-        id: `punch-${Date.now()}`,
-        employeeId: this.profile.id,
-        type: params.type,
-        workMode: params.workMode,
-        serverTimestampUtc: serverDate.toISOString(),
-        serverTimeFormattedIST: formattedIST,
-        epochMs: serverEpoch,
-        siteId: geoEval.nearestSite.id,
-        siteName:
-          params.workMode === 'OFFICE'
-            ? geoEval.nearestSite.name
-            : params.workMode === 'WFH'
-            ? 'Home (WFH Mode)'
-            : 'Client On-Duty Site',
-        latitude: params.latitude,
-        longitude: params.longitude,
-        accuracy: params.accuracy || 10,
-        distanceMeters: geoEval.distanceMeters,
-        isWithinGeofence: params.workMode === 'OFFICE' ? geoEval.isWithinGeofence : true,
-        deviceId: this.profile.registeredDeviceId,
-        deviceModel: this.profile.registeredDeviceModel,
-        networkType: params.offlineQueued ? 'Offline' : 'WiFi',
-        selfieUrl: params.selfieUrl,
-        offlineQueued: !!params.offlineQueued,
-        receivedLate: !!params.offlineQueued,
-        flags: {
-          mockLocationDetected: geoEval.mockLocationDetected,
-          clockDriftDetected: serverTimeService.isClockDriftActive(),
-          lateMark: false,
-          earlyOut: false,
-        },
-      };
     }
 
-    this.punchesList.push(punch);
-
-    this.notifications.unshift({
-      id: `notif-${Date.now()}`,
-      title: `${punch.type === 'IN' ? 'Punch In' : punch.type === 'OUT' ? 'Punch Out' : punch.type} Stamped`,
-      body: `Authoritative server time: ${punch.serverTimeFormattedIST} (${punch.siteName}).`,
-      category: 'ATTENDANCE',
-      timestampIST: punch.serverTimeFormattedIST,
-      read: false,
-    });
-
-    this.saveToStorage();
-
-    return {
-      punch,
-      message: `Punch ${punch.type} successfully recorded at ${punch.serverTimeFormattedIST} IST.`,
-    };
+    throw new Error('Supabase client is not configured for authoritative punch recording.');
   }
 
   // =========================================================================
@@ -1274,33 +1282,32 @@ class ApiService {
   // =========================================================================
 
   public async verifyKioskPin(pin: string): Promise<boolean> {
+    if (!pin || !pin.trim()) return false;
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase.functions.invoke('kiosk-pin', {
+          body: { pin: pin.trim() },
+        });
+        if (!error && data?.success) {
+          return true;
+        }
+      } catch (err) {
+        console.warn('Supabase kiosk-pin invoke warning:', err);
+      }
+    }
+
     try {
       const res = await fetch('/api/kiosk/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify({ pin: pin.trim() }),
       });
-      if (res.ok) return true;
+      const data = await res.json();
+      return Boolean(res.ok && data.success);
     } catch {
-      // Fallback
+      return false;
     }
-    return pin === this.kioskAdminPin;
-  }
-
-  public async updateKioskPin(oldPin: string, newPin: string): Promise<boolean> {
-    if (oldPin !== this.kioskAdminPin) return false;
-    this.kioskAdminPin = newPin;
-    this.saveToStorage();
-    try {
-      await fetch('/api/kiosk/change-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ oldPin, newPin }),
-      });
-    } catch {
-      // Fallback
-    }
-    return true;
   }
 
   // Phase 2 extras

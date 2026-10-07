@@ -12,39 +12,60 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ error: 'Server configuration error: Supabase service credentials missing.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+      );
+    }
+
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-    // 1. Authenticate user from JWT token
-    let employeeId: string | null = null;
-    let employeeName: string = '';
-
-    if (authHeader) {
-      const token = authHeader.replace('Bearer ', '').trim();
-      const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
-      if (!userError && userData?.user) {
-        // Look up employee record matching auth_user_id
-        const { data: empData } = await supabaseAdmin
-          .from('employees')
-          .select('id, name, is_active')
-          .eq('auth_user_id', userData.user.id)
-          .maybeSingle();
-
-        if (empData) {
-          if (!empData.is_active) {
-            return new Response(
-              JSON.stringify({ error: 'Employee account is deactivated.' }),
-              { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
-            );
-          }
-          employeeId = empData.id;
-          employeeName = empData.name;
-        }
-      }
+    // 1. Authenticate user strictly from Supabase JWT token
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return new Response(
+        JSON.stringify({ error: 'Authentication required. Missing or invalid Authorization header.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
+      );
     }
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
+
+    if (userError || !userData?.user) {
+      return new Response(
+        JSON.stringify({ error: 'Authentication failed. Invalid or expired session token.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
+      );
+    }
+
+    // 2. Fetch employee profile linked to auth_user_id
+    const { data: empData, error: empError } = await supabaseAdmin
+      .from('employees')
+      .select('id, name, is_active')
+      .eq('auth_user_id', userData.user.id)
+      .maybeSingle();
+
+    if (empError || !empData) {
+      return new Response(
+        JSON.stringify({ error: 'Access denied: No employee profile linked to authenticated user account.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+      );
+    }
+
+    if (!empData.is_active) {
+      return new Response(
+        JSON.stringify({ error: 'Access denied: Employee account is currently deactivated.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+      );
+    }
+
+    const employeeId = empData.id;
+    const employeeName = empData.name;
 
     const body = await req.json();
 
-    // STRICT ANTI-TAMPER CHECK: Reject any client timestamp
+    // 3. STRICT ANTI-TAMPER CHECK: Reject any client timestamp
     if (body.timestamp || body.time || body.clientTime || body.serverTime) {
       return new Response(
         JSON.stringify({
@@ -54,52 +75,29 @@ serve(async (req) => {
       );
     }
 
-    // If not authenticated via JWT, check for kiosk-authenticated payload or reject
-    if (!employeeId) {
-      if (body.employeeId) {
-        // Look up if valid active employee
-        const { data: empData } = await supabaseAdmin
-          .from('employees')
-          .select('id, name, is_active')
-          .eq('id', body.employeeId)
-          .maybeSingle();
-
-        if (empData && empData.is_active) {
-          employeeId = empData.id;
-          employeeName = empData.name;
-        }
-      }
-    }
-
-    if (!employeeId) {
-      return new Response(
-        JSON.stringify({ error: 'Authentication required. No valid employee profile found.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
-      );
-    }
-
     const { type, workMode, latitude, longitude, accuracy, deviceId, selfieUrl } = body;
 
-    if (latitude === undefined || longitude === undefined) {
+    if (latitude === undefined || longitude === undefined || typeof latitude !== 'number' || typeof longitude !== 'number') {
       return new Response(
-        JSON.stringify({ error: 'Valid GPS coordinates required.' }),
+        JSON.stringify({ error: 'Valid GPS numerical coordinates (latitude, longitude) are required.' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }
 
-    // 2. Fetch active geofence sites from Supabase Database
-    const { data: dbSites } = await supabaseAdmin
+    // 4. Fetch active geofence sites from Supabase Database (Fail Closed: NO hardcoded fallbacks)
+    const { data: activeSites, error: sitesError } = await supabaseAdmin
       .from('geofence_sites')
       .select('id, name, latitude, longitude, radius_meters')
       .eq('is_active', true);
 
-    const activeSites = dbSites && dbSites.length > 0 ? dbSites : [
-      { id: 'site-surat-hq', name: 'LogiBrisk HQ (Surat)', latitude: 21.170240, longitude: 72.831061, radius_meters: 250 },
-      { id: 'site-ahmedabad-hub', name: 'Ahmedabad Tech Hub', latitude: 23.022505, longitude: 72.571362, radius_meters: 200 },
-      { id: 'site-mumbai-client', name: 'BKC Client Office (Mumbai)', latitude: 19.065714, longitude: 72.868725, radius_meters: 150 },
-    ];
+    if (sitesError || !activeSites || activeSites.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Geofence verification unavailable: No active sites configured in database.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+      );
+    }
 
-    // 3. Geofence evaluation
+    // 5. Server-side Geofence evaluation
     let nearestSite = activeSites[0];
     let minDistance = calculateHaversineMeters(latitude, longitude, nearestSite.latitude, nearestSite.longitude);
 
@@ -114,7 +112,7 @@ serve(async (req) => {
     const isWithinGeofence = minDistance <= nearestSite.radius_meters;
     const serverTime = getAuthoritativeISTTime();
 
-    // 4. Construct authoritative punch record
+    // 6. Construct authoritative punch record using trusted employeeId
     const punchRecord = {
       employee_id: employeeId,
       type: type || 'IN',
@@ -133,7 +131,7 @@ serve(async (req) => {
       mock_detected: false,
     };
 
-    // 5. INSERT punch record into Database
+    // 7. INSERT punch record into Database
     const { data: insertedPunch, error: insertError } = await supabaseAdmin
       .from('punches')
       .insert(punchRecord)

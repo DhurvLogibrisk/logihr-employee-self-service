@@ -1,8 +1,18 @@
 -- =====================================================================
--- Migration 002: Approvals, Timesheets, Regularizations, and Payslips
+-- Migration 002: Approvals, Timesheets, Regularizations, Payslips & Hardened RLS
+-- Security Standard: Strict auth.uid() authorization, search_path isolation,
+-- explicit grants, and transactional security definer procedures.
 -- =====================================================================
 
--- 1. Regularizations Table
+-- 1. App Settings Table
+create table if not exists public.app_settings (
+    key text primary key,
+    value text not null,
+    description text,
+    updated_at timestamptz not null default now()
+);
+
+-- 2. Regularizations Table
 create table if not exists public.regularizations (
     id uuid primary key default uuid_generate_v4(),
     employee_id uuid not null references public.employees(id) on delete cascade,
@@ -19,7 +29,7 @@ create table if not exists public.regularizations (
     updated_at timestamptz not null default now()
 );
 
--- 2. Timesheets Table
+-- 3. Timesheets Table
 create table if not exists public.timesheets (
     id uuid primary key default uuid_generate_v4(),
     employee_id uuid not null references public.employees(id) on delete cascade,
@@ -37,7 +47,7 @@ create table if not exists public.timesheets (
     unique(employee_id, date)
 );
 
--- 3. Timesheet Detail Rows Table
+-- 4. Timesheet Detail Rows Table
 create table if not exists public.timesheet_rows (
     id uuid primary key default uuid_generate_v4(),
     timesheet_id uuid not null references public.timesheets(id) on delete cascade,
@@ -51,7 +61,7 @@ create table if not exists public.timesheet_rows (
     created_at timestamptz not null default now()
 );
 
--- 4. Payslips Table (Real Salary Statements with RLS)
+-- 5. Payslips Table (Confidential Salary Statements with RLS)
 create table if not exists public.payslips (
     id uuid primary key default uuid_generate_v4(),
     employee_id uuid not null references public.employees(id) on delete cascade,
@@ -77,7 +87,7 @@ create index if not exists idx_timesheets_employee_date on public.timesheets(emp
 create index if not exists idx_payslips_employee on public.payslips(employee_id);
 
 -- =====================================================================
--- RLS HELPER FUNCTIONS & POLICIES
+-- RLS HELPER FUNCTIONS (HARDENED SEARCH_PATH)
 -- =====================================================================
 
 -- Get current authenticated employee ID
@@ -86,6 +96,7 @@ returns uuid
 language sql
 stable
 security definer
+set search_path = public
 as $$
     select id from public.employees where auth_user_id = auth.uid() limit 1;
 $$;
@@ -96,6 +107,7 @@ returns boolean
 language sql
 stable
 security definer
+set search_path = public
 as $$
     select exists (
         select 1 from public.employees e
@@ -108,79 +120,129 @@ as $$
     );
 $$;
 
--- Enable RLS
-alter table public.payslips enable row level security;
-alter table public.timesheets enable row level security;
-alter table public.timesheet_rows enable row level security;
-alter table public.regularizations enable row level security;
-alter table public.leave_requests enable row level security;
+-- =====================================================================
+-- ROW LEVEL SECURITY POLICIES FOR ALL TABLES
+-- =====================================================================
 
--- Payslips: Employee can only view their own rows
-create policy "Employees can view own payslips"
-    on public.payslips
-    for select
+-- 1. Employees RLS
+alter table public.employees enable row level security;
+
+create policy "Authenticated users can view active employees"
+    on public.employees for select
+    using (auth.role() = 'authenticated');
+
+create policy "Employees can update own profile"
+    on public.employees for update
+    using (auth_user_id = auth.uid());
+
+-- 2. Devices RLS
+alter table public.devices enable row level security;
+
+create policy "Employees can view own devices"
+    on public.devices for select
     using (employee_id = public.get_current_employee_id());
 
--- Leave Requests RLS: Own rows + Manager oversight
+create policy "Employees can insert own devices"
+    on public.devices for insert
+    with check (employee_id = public.get_current_employee_id());
+
+create policy "Employees can update own devices"
+    on public.devices for update
+    using (employee_id = public.get_current_employee_id());
+
+-- 3. Geofence Sites RLS
+alter table public.geofence_sites enable row level security;
+
+create policy "Authenticated users can view active geofence sites"
+    on public.geofence_sites for select
+    using (is_active = true and auth.role() = 'authenticated');
+
+-- 4. Holidays RLS
+alter table public.holidays enable row level security;
+
+create policy "Authenticated users can view holidays"
+    on public.holidays for select
+    using (auth.role() = 'authenticated');
+
+-- 5. Leave Balances RLS
+alter table public.leave_balances enable row level security;
+
+create policy "Employees and managers can view leave balances"
+    on public.leave_balances for select
+    using (
+        employee_id = public.get_current_employee_id()
+        or public.is_manager_of(public.get_current_employee_id(), employee_id)
+    );
+
+-- 6. Leave Requests RLS
+alter table public.leave_requests enable row level security;
+
 create policy "Employees and managers can view leave requests"
-    on public.leave_requests
-    for select
+    on public.leave_requests for select
     using (
         employee_id = public.get_current_employee_id()
         or public.is_manager_of(public.get_current_employee_id(), employee_id)
     );
 
 create policy "Employees can insert own leave requests"
-    on public.leave_requests
-    for insert
+    on public.leave_requests for insert
     with check (employee_id = public.get_current_employee_id());
 
 create policy "Employees can cancel own pending leave requests"
-    on public.leave_requests
-    for update
+    on public.leave_requests for update
     using (employee_id = public.get_current_employee_id() and status = 'PENDING')
     with check (status = 'CANCELLED');
 
--- Regularizations RLS: Own rows + Manager oversight
+-- 7. Punches RLS (Strictly Server-Stamped: INSERT is blocked for direct client)
+alter table public.punches enable row level security;
+
+create policy "Employees and managers can view punches"
+    on public.punches for select
+    using (
+        employee_id = public.get_current_employee_id()
+        or public.is_manager_of(public.get_current_employee_id(), employee_id)
+    );
+
+-- 8. Regularizations RLS
+alter table public.regularizations enable row level security;
+
 create policy "Employees and managers can view regularizations"
-    on public.regularizations
-    for select
+    on public.regularizations for select
     using (
         employee_id = public.get_current_employee_id()
         or public.is_manager_of(public.get_current_employee_id(), employee_id)
     );
 
 create policy "Employees can insert own regularizations"
-    on public.regularizations
-    for insert
+    on public.regularizations for insert
     with check (employee_id = public.get_current_employee_id());
 
--- Timesheets RLS: Own draft/submission + Manager review
+-- 9. Timesheets RLS
+alter table public.timesheets enable row level security;
+
 create policy "Employees and managers can view timesheets"
-    on public.timesheets
-    for select
+    on public.timesheets for select
     using (
         employee_id = public.get_current_employee_id()
         or public.is_manager_of(public.get_current_employee_id(), employee_id)
     );
 
 create policy "Employees can insert own timesheets"
-    on public.timesheets
-    for insert
+    on public.timesheets for insert
     with check (employee_id = public.get_current_employee_id());
 
 create policy "Employees can update own draft or rejected timesheets"
-    on public.timesheets
-    for update
+    on public.timesheets for update
     using (
         employee_id = public.get_current_employee_id()
         and status in ('DRAFT', 'REJECTED')
     );
 
--- Timesheet Rows RLS
+-- 10. Timesheet Rows RLS
+alter table public.timesheet_rows enable row level security;
+
 create policy "Employees and managers can view timesheet rows"
-    on public.timesheet_rows
-    for select
+    on public.timesheet_rows for select
     using (
         exists (
             select 1 from public.timesheets t
@@ -193,8 +255,7 @@ create policy "Employees and managers can view timesheet rows"
     );
 
 create policy "Employees can manage own timesheet rows"
-    on public.timesheet_rows
-    for all
+    on public.timesheet_rows for all
     using (
         exists (
             select 1 from public.timesheets t
@@ -204,19 +265,29 @@ create policy "Employees can manage own timesheet rows"
         )
     );
 
--- Punches RLS
-alter table public.punches enable row level security;
-create policy "Employees and managers can view punches"
-    on public.punches
-    for select
+-- 11. Payslips RLS: Employee can only view their own rows
+alter table public.payslips enable row level security;
+
+create policy "Employees can view own payslips"
+    on public.payslips for select
+    using (employee_id = public.get_current_employee_id());
+
+-- 12. App Settings RLS: Only HR Admin
+alter table public.app_settings enable row level security;
+
+create policy "Only HR Admin can view app settings"
+    on public.app_settings for select
     using (
-        employee_id = public.get_current_employee_id()
-        or public.is_manager_of(public.get_current_employee_id(), employee_id)
+        exists (
+            select 1 from public.employees
+            where auth_user_id = auth.uid() and role = 'HR_ADMIN'
+        )
     );
 
 -- =====================================================================
 -- TRANSACTIONAL APPROVAL & REJECTION FUNCTIONS (SECURITY DEFINER)
 -- Caller identity is STRICTLY derived from auth.uid() - never trusted from client
+-- Isolated with search_path = public
 -- =====================================================================
 
 -- 1. Transactional Leave Approval with Balance Deduction
@@ -227,6 +298,7 @@ create or replace function public.approve_leave_request(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -308,6 +380,7 @@ create or replace function public.reject_leave_request(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -355,6 +428,7 @@ create or replace function public.approve_regularization(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -401,6 +475,7 @@ create or replace function public.reject_regularization(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -447,6 +522,7 @@ create or replace function public.approve_timesheet(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -494,6 +570,7 @@ create or replace function public.reject_timesheet(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_caller_id uuid;
@@ -536,6 +613,7 @@ $$;
 create or replace function public.fn_protect_employee_columns()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
     if auth.role() = 'authenticated' then
@@ -553,3 +631,31 @@ create trigger trg_protect_employee_columns
     before update on public.employees
     for each row
     execute function public.fn_protect_employee_columns();
+
+-- =====================================================================
+-- EXPLICIT DATABASE GRANTS
+-- Revoke from public, grant execute only to authenticated users
+-- =====================================================================
+revoke all on function public.get_current_employee_id() from public;
+grant execute on function public.get_current_employee_id() to authenticated;
+
+revoke all on function public.is_manager_of(uuid, uuid) from public;
+grant execute on function public.is_manager_of(uuid, uuid) to authenticated;
+
+revoke all on function public.approve_leave_request(uuid, text) from public;
+grant execute on function public.approve_leave_request(uuid, text) to authenticated;
+
+revoke all on function public.reject_leave_request(uuid, text) from public;
+grant execute on function public.reject_leave_request(uuid, text) to authenticated;
+
+revoke all on function public.approve_regularization(uuid, text) from public;
+grant execute on function public.approve_regularization(uuid, text) to authenticated;
+
+revoke all on function public.reject_regularization(uuid, text) from public;
+grant execute on function public.reject_regularization(uuid, text) to authenticated;
+
+revoke all on function public.approve_timesheet(uuid, text) from public;
+grant execute on function public.approve_timesheet(uuid, text) to authenticated;
+
+revoke all on function public.reject_timesheet(uuid, text) from public;
+grant execute on function public.reject_timesheet(uuid, text) to authenticated;

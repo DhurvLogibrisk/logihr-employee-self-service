@@ -159,7 +159,7 @@ export const RegularizationModal: React.FC = () => {
           {/* Approver Info */}
           <div className="p-3 rounded-xl bg-[#18233e]/50 border border-[#243456] text-xs text-slate-300">
             <span className="text-slate-400">Approving Manager:</span>{' '}
-            <span className="font-semibold text-white">Vikram Shah (Director)</span>
+            <span className="font-semibold text-white">{profile.reportingManager || 'Designated Manager'}</span>
           </div>
 
           {/* Actions */}

@@ -5,9 +5,9 @@ import { LeaveTypeCode } from '../../types';
 import { X, Calendar, Upload, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 export const AddLeaveModal: React.FC = () => {
-  const { closeModal, showToast, refreshData, leaveBalances, leaveRequests } = useAppStore();
+  const { closeModal, showToast, refreshData, leaveBalances, leaveRequests, profile } = useAppStore();
 
-  const [employeeName, setEmployeeName] = useState('Parth : Parth Bhutka');
+  const [employeeName, setEmployeeName] = useState(profile.name ? `${profile.name} (${profile.empCode})` : 'Active Employee');
   const [leaveType, setLeaveType] = useState<string>('');
   const [leaveTypeCode, setLeaveTypeCode] = useState<LeaveTypeCode | ''>('');
   const [fromDate, setFromDate] = useState('12/10/2026 09:30 AM');
@@ -15,7 +15,7 @@ export const AddLeaveModal: React.FC = () => {
   const [isHalfDay, setIsHalfDay] = useState(false);
   const [noOfDays, setNoOfDays] = useState<number>(2);
   const [reason, setReason] = useState('');
-  const [approverName, setApproverName] = useState('Vikram Shah');
+  const [approverName, setApproverName] = useState(profile.reportingManager || 'Reporting Manager');
   const [attachment, setAttachment] = useState<File | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -180,7 +180,7 @@ export const AddLeaveModal: React.FC = () => {
               onChange={(e) => setEmployeeName(e.target.value)}
               className="w-full bg-[#18233e] border border-[#243456] rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
             >
-              <option value="Parth : Parth Bhutka">Parth : Parth Bhutka (EMP-00125)</option>
+              <option value={`${profile.name} (${profile.empCode})`}>{profile.name} ({profile.empCode})</option>
             </select>
           </div>
 
@@ -291,8 +291,8 @@ export const AddLeaveModal: React.FC = () => {
               onChange={(e) => setApproverName(e.target.value)}
               className="w-full bg-[#18233e] border border-[#243456] rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
             >
-              <option value="Vikram Shah">Vikram Shah (Director - Reporting Manager)</option>
-              <option value="Pooja Mehta">Pooja Mehta (HR Head)</option>
+              <option value={profile.reportingManager || 'Reporting Manager'}>{profile.reportingManager || 'Reporting Manager'}</option>
+              <option value="HR Admin Department">HR Admin Department</option>
             </select>
           </div>
 

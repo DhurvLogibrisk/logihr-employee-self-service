@@ -14,14 +14,14 @@ serve(async (req) => {
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
     let employeeInfo = {
-      name: 'Employee',
+      name: 'Authenticated Employee',
       empCode: '',
-      designation: '',
-      department: '',
+      designation: 'General Staff',
+      department: 'General',
       balances: 'CL: 0, SL: 0, EL: 0',
     };
 
-    if (authHeader) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       const { data: userData } = await supabaseAdmin.auth.getUser(token);
       if (userData?.user) {
@@ -49,18 +49,25 @@ serve(async (req) => {
       }
     }
 
-    const { query, language, userContext } = await req.json();
+    const body = await req.json();
+    const query = body.query;
+    const language = body.language || 'en';
+
+    if (!query) {
+      return new Response(
+        JSON.stringify({ error: 'Query parameter is required.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    // Client-supplied userContext is strictly ignored for security
     const serverTime = getAuthoritativeISTTime();
     const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
-
-    const effectiveName = userContext?.name || employeeInfo.name;
-    const effectiveEmpCode = userContext?.empCode || employeeInfo.empCode;
-    const effectiveDepartment = userContext?.department || employeeInfo.department;
 
     if (geminiApiKey && geminiApiKey !== 'MY_GEMINI_API_KEY') {
       const systemInstruction = `You are LogiHR AI Assistant for LogiBrisk Technologies (Surat HQ, IST).
 Current Server Time: ${serverTime.timeFormattedIST} IST.
-Employee: ${effectiveName} (${effectiveEmpCode || 'Active Employee'}, Department: ${effectiveDepartment || 'General'}).
+Employee: ${employeeInfo.name} (${employeeInfo.empCode || 'Active Employee'}, Department: ${employeeInfo.department}).
 Leave Balances: ${employeeInfo.balances}.
 Languages: English, Gujarati (ગુજરાતી), Hindi (हिन्दी).
 If asked to draft a timesheet, reply politely and output a JSON block with { "actionType": "DRAFT_TIMESHEET", "rows": [...] }.
@@ -126,8 +133,8 @@ Safety: You prepare drafts only.`;
     }
 
     // Fallback response
-    const qLower = (query || '').toLowerCase();
-    let text = `Hello ${effectiveName} from LogiHR Assistant. Current time is ${serverTime.timeFormattedIST} IST.`;
+    const qLower = query.toLowerCase();
+    let text = `Hello ${employeeInfo.name} from LogiHR Assistant. Current time is ${serverTime.timeFormattedIST} IST.`;
     if (qLower.includes('timesheet') || qLower.includes('bhari')) {
       text =
         language === 'gu'

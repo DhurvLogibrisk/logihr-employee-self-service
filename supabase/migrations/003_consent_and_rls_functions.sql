@@ -1,5 +1,7 @@
 -- =====================================================================
 -- Migration 003: Privacy Consent & DPDP Act Compliance
+-- Security Standard: Strict auth.uid() authorization, search_path isolation,
+-- explicit grants, and immutable consent audit log.
 -- =====================================================================
 
 -- Ensure consent columns exist on employees
@@ -7,7 +9,7 @@ alter table public.employees
 add column if not exists consent_given_at timestamptz,
 add column if not exists consent_version text default 'v1.0';
 
--- Audit table for tracking employee consent history
+-- Immutable audit table for tracking employee consent history
 create table if not exists public.consent_logs (
     id uuid primary key default uuid_generate_v4(),
     employee_id uuid not null references public.employees(id) on delete cascade,
@@ -19,6 +21,19 @@ create table if not exists public.consent_logs (
     consented_at timestamptz not null default now()
 );
 
+-- Enable RLS on consent_logs
+alter table public.consent_logs enable row level security;
+
+create policy "Employees and HR can view own consent logs"
+    on public.consent_logs for select
+    using (
+        employee_id = public.get_current_employee_id()
+        or exists (
+            select 1 from public.employees
+            where auth_user_id = auth.uid() and role = 'HR_ADMIN'
+        )
+    );
+
 -- Record employee privacy consent (DPDP Act 2023 compliant)
 -- Authenticated caller identity is derived strictly from auth.uid()
 create or replace function public.record_employee_consent(
@@ -29,6 +44,7 @@ create or replace function public.record_employee_consent(
 returns jsonb
 language plpgsql
 security definer
+set search_path = public
 as $$
 declare
     v_emp_id uuid;
@@ -58,3 +74,7 @@ begin
     );
 end;
 $$;
+
+-- Explicit Grants
+revoke all on function public.record_employee_consent(text, text, text) from public;
+grant execute on function public.record_employee_consent(text, text, text) to authenticated;

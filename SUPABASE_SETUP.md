@@ -22,7 +22,7 @@ VITE_DEMO_MODE="false" # Set to "true" only in test/sandbox environments
 # Authoritative server secrets (NEVER exposed to frontend bundle)
 SUPABASE_SERVICE_ROLE_KEY="<YOUR-SERVICE-ROLE-SECRET>"
 GEMINI_API_KEY="<YOUR-GEMINI-API-KEY>"
-KIOSK_ADMIN_PIN="9941" # Hashed / configured on server only
+KIOSK_ADMIN_PIN="<YOUR-SECURE-ADMIN-PIN>" # Configured on server/Edge Functions only
 ```
 
 ---

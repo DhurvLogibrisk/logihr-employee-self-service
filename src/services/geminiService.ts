@@ -1,5 +1,6 @@
 import { apiService } from './apiService';
 import { serverTimeService } from './serverTimeService';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 export interface AssistantActionProposal {
   type: 'DRAFT_TIMESHEET' | 'PREFILL_LEAVE' | 'LEAVE_BALANCE' | 'PUNCH_STATUS' | 'PENDING_APPROVALS';
@@ -25,7 +26,31 @@ export async function processAssistantQuery(
   const timeNow = serverTimeService.getCurrentServerTimeFormattedIST();
   const profile = apiService.getProfile();
 
-  // 1. Try real Server-Side Gemini API call first
+  // 1. Try Supabase Edge Function / Server-Side Gemini API call first
+  if (isSupabaseConfigured) {
+    try {
+      const { data, error } = await supabase.functions.invoke('assistant', {
+        body: {
+          query: userInput,
+          language,
+        },
+      });
+
+      if (!error && data?.text) {
+        return {
+          id: `msg-${Date.now()}`,
+          sender: 'assistant',
+          text: data.text,
+          timestamp: data.serverTimeIST || timeNow,
+          proposal: data.proposal,
+          isAiGenerated: true,
+        };
+      }
+    } catch (err) {
+      console.warn('Supabase assistant function error:', err);
+    }
+  }
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
@@ -36,11 +61,6 @@ export async function processAssistantQuery(
       body: JSON.stringify({
         query: userInput,
         language,
-        userContext: {
-          name: profile.name,
-          empCode: profile.empCode,
-          department: profile.department,
-        },
       }),
       signal: controller.signal,
     });
@@ -180,7 +200,7 @@ export async function processAssistantQuery(
           isHalfDay: false,
           noOfDays: 1,
           reason: 'Personal engagement',
-          approverName: 'Vikram Shah',
+          approverName: profile.reportingManager || 'Reporting Manager',
         },
         requiresConfirmation: true,
       },

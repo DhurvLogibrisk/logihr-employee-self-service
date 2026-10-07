@@ -150,13 +150,12 @@ export const LoginScreen: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginS
               </div>
             </div>
 
-            {/* 2. Employee ID / Mobile No.* */}
+            {/* 2. Employee ID / Corporate Email* */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs font-semibold text-slate-200">
-                  Employee ID / Mobile No.*
+                  Employee ID / Corporate Email*
                 </label>
-                <span className="text-[10px] text-cyan-400 font-mono">Demo: EMP-00125</span>
               </div>
               <div className="relative">
                 <input
@@ -164,7 +163,7 @@ export const LoginScreen: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginS
                   required
                   value={empId}
                   onChange={(e) => setEmpId(e.target.value)}
-                  placeholder="e.g. EMP-00125"
+                  placeholder="e.g. your corporate ID or email"
                   className="w-full bg-[#18233e] border border-[#243456] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
                 />
                 <User className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
@@ -272,10 +271,10 @@ export const LoginScreen: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginS
           </form>
         )}
 
-        {/* Bound Device Seal */}
+        {/* Security Seal */}
         <div className="pt-3 border-t border-[#243456]/60 flex items-center justify-center gap-2 text-[10px] text-slate-400">
           <Smartphone className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Bound Device: Google Pixel 8 Pro (DEV-PX8-9941)</span>
+          <span>Device Security: Hardware Geofence & Encrypted Session</span>
         </div>
       </div>
     </div>

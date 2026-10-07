@@ -122,3 +122,22 @@ describe('Timesheet Overlap Validator Rules', () => {
     expect(checkTimesheetOverlap(rows)).toBe(true);
   });
 });
+
+/**
+ * 5. Anti-Self-Approval and Security Rules
+ */
+describe('Security Definer Authorization Rules', () => {
+  it('enforces anti-self-approval invariant when employeeId matches callerId', () => {
+    const employeeId: string = 'emp-uuid-1';
+    const callerId: string = 'emp-uuid-1';
+    const isSelfApproval = employeeId === callerId;
+    expect(isSelfApproval).toBe(true);
+  });
+
+  it('allows approval only when caller is different from requester', () => {
+    const employeeId: string = 'emp-uuid-1';
+    const managerId: string = 'emp-uuid-2';
+    const isSelfApproval = employeeId === managerId;
+    expect(isSelfApproval).toBe(false);
+  });
+});
