@@ -1,0 +1,6 @@
+{
+  "name": "LogiHR - Employee Self Service",
+  "description": "LogiHR Employee Self Service for LogiBrisk Technologies: Tamper-proof IST Attendance, Leave Management, Detailed Timesheet, and Manager Approvals.",
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
